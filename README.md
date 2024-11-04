@@ -1,4 +1,4 @@
-# customize-bedrock-endpoint
+# Customize Bedrock endpoint
 
 ### Deploy
 
@@ -6,7 +6,7 @@
 2. Click the following button to launch the CloudFormation Stack in that region. Choose one of the following:
    - **NLB + Bedrock interface endpoint**
 
-      [![Launch Stack](assets/launch-stack.png)](https://console.aws.amazon.com/cloudformation/home#/stacks/create/template?stackName=BedrockProxyAPI&templateURL=https://aws-gcr-solutions.s3.amazonaws.com/bedrock-access-gateway/latest/BedrockProxy.template)
+      [![Launch Stack](assets/launch-stack.png)](https://console.aws.amazon.com/cloudformation/home#/stacks/create/template?stackName=BedrockProxyAPI&templateURL=https://sample-client-for-bedrock-clouformation.s3.us-west-2.amazonaws.com/CustomizeBedrockRunetimeEndpoint.yaml)
 
 **Example SDK Usage**
 
