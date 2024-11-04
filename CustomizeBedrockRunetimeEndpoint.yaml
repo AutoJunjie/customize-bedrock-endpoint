@@ -1,0 +1,235 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template to create VPC Interface Endpoint for Bedrock Runtime, NLB, and IP-based target registration'
+
+Parameters:
+  VpcId:
+    Type: String
+    Description: VPC ID where the resources will be created
+  
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of subnet IDs for the endpoint and NLB
+  
+  VpcCidr:
+    Type: String
+    Description: CIDR block of the VPC
+
+Resources:
+  BedrockRuntimeEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Bedrock Runtime VPC Endpoint
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref VpcCidr
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+
+  NLBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Network Load Balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-nlb-sg
+
+  BedrockRuntimeEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.bedrock-runtime'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: false
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds: 
+        - !Ref BedrockRuntimeEndpointSecurityGroup
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action:
+              - 'bedrock:InvokeModel'
+              - 'bedrock:InvokeModelWithResponseStream'
+            Resource: '*'
+
+  NetworkLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: BedrockRuntimeEndpoint
+    Properties:
+      Name: !Sub ${AWS::StackName}-nlb
+      Type: network
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets: !Ref SubnetIds
+      SecurityGroups: 
+        - !Ref NLBSecurityGroup
+      LoadBalancerAttributes:
+        - Key: deletion_protection.enabled
+          Value: false
+        - Key: load_balancing.cross_zone.enabled
+          Value: true
+
+  NLBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${AWS::StackName}-tg
+      Port: 443
+      Protocol: TCP
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: TCP
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - Key: preserve_client_ip.enabled
+          Value: false
+
+  NLBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref NetworkLoadBalancer
+      Port: 443
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref NLBTargetGroup
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: VPCEndpointAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeVpcEndpoints
+                  - ec2:DescribeNetworkInterfaces
+                  - elasticloadbalancing:RegisterTargets
+                  - elasticloadbalancing:DeregisterTargets
+                Resource: '*'
+
+  GetEndpointIPsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.9
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          def handler(event, context):
+            try:
+              if event['RequestType'] in ['Create', 'Update']:
+                ec2 = boto3.client('ec2')
+                endpoint_id = event['ResourceProperties']['EndpointId']
+                response = ec2.describe_vpc_endpoints(VpcEndpointIds=[endpoint_id])
+                network_interfaces = response['VpcEndpoints'][0]['NetworkInterfaceIds']
+                eni_response = ec2.describe_network_interfaces(NetworkInterfaceIds=network_interfaces)
+                ip_addresses = [eni['PrivateIpAddress'] for eni in eni_response['NetworkInterfaces']]
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, {'IpAddresses': ip_addresses})
+              else:
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+            except Exception as e:
+              print(f"Error: {str(e)}")
+              cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  GetEndpointIPs:
+    Type: Custom::GetEndpointIPs
+    DependsOn: BedrockRuntimeEndpoint
+    Properties:
+      ServiceToken: !GetAtt GetEndpointIPsFunction.Arn
+      EndpointId: !Ref BedrockRuntimeEndpoint
+
+  RegisterTargetsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.9
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          def handler(event, context):
+            try:
+              if event['RequestType'] in ['Create', 'Update']:
+                elbv2 = boto3.client('elbv2')
+                target_group_arn = event['ResourceProperties']['TargetGroupArn']
+                ip_addresses = event['ResourceProperties']['IpAddresses']
+                targets = [{'Id': ip, 'Port': 443} for ip in ip_addresses]
+                if targets:
+                  elbv2.register_targets(
+                    TargetGroupArn=target_group_arn,
+                    Targets=targets
+                  )
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+            except Exception as e:
+              print(f"Error: {str(e)}")
+              cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  RegisterTargetsCustomResource:
+    Type: Custom::RegisterTargets
+    DependsOn: [GetEndpointIPs, NLBTargetGroup]
+    Properties:
+      ServiceToken: !GetAtt RegisterTargetsFunction.Arn
+      TargetGroupArn: !Ref NLBTargetGroup
+      IpAddresses: !GetAtt GetEndpointIPs.IpAddresses
+
+Outputs:
+  BedrockRuntimeEndpointId:
+    Description: VPC Endpoint ID
+    Value: !Ref BedrockRuntimeEndpoint
+  
+  NetworkLoadBalancerDNS:
+    Description: Network Load Balancer DNS Name
+    Value: !GetAtt NetworkLoadBalancer.DNSName
+  
+  NetworkLoadBalancerArn:
+    Description: Network Load Balancer ARN
+    Value: !Ref NetworkLoadBalancer
+  
+  TargetGroupArn:
+    Description: Target Group ARN
+    Value: !Ref NLBTargetGroup
+  
+  EndpointIPs:
+    Description: Endpoint IP Addresses
+    Value: !Join [',', !GetAtt GetEndpointIPs.IpAddresses]
+  
+  NLBSecurityGroupId:
+    Description: Network Load Balancer Security Group ID
+    Value: !Ref NLBSecurityGroup
