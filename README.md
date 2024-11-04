@@ -8,6 +8,9 @@
 
       [![Launch Stack](assets/launch-stack.png)](https://console.aws.amazon.com/cloudformation/home#/stacks/create/template?stackName=BedrockProxyAPI&templateURL=https://sample-client-for-bedrock-clouformation.s3.us-west-2.amazonaws.com/CustomizeBedrockRunetimeEndpoint.yaml)
 
+### Architecture
+<img width="829" alt="image" src="https://github.com/user-attachments/assets/2fe3bf54-c370-4bca-9a1e-b63bbff0f3b6">
+
 **Example SDK Usage**
 
 ```python
@@ -39,6 +42,3 @@ response = bedrock_client.invoke_model(
 response_body = json.loads(response.get('body').read())
 print(response_body.get('completion'))
 ```
-
-### Architecture
-<img width="829" alt="image" src="https://github.com/user-attachments/assets/2fe3bf54-c370-4bca-9a1e-b63bbff0f3b6">
