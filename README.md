@@ -11,7 +11,7 @@
 ### Architecture
 <img width="829" alt="image" src="https://github.com/user-attachments/assets/2fe3bf54-c370-4bca-9a1e-b63bbff0f3b6">
 
-<br>
+<br></br>
 **Example SDK Usage**
 
 ```python
