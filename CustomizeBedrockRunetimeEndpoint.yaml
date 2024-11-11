@@ -13,14 +13,6 @@ Parameters:
   VpcCidr:
     Type: String
     Description: CIDR block of the VPC
-    
-  NLBScheme:
-    Type: String
-    Description: Whether the NLB should be internal or internet-facing
-    AllowedValues:
-      - internal
-      - internet-facing
-    Default: internet-facing
 
 Resources:
   BedrockRuntimeEndpointSecurityGroup:
@@ -48,10 +40,7 @@ Resources:
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
-          CidrIp: !If 
-            - IsInternal
-            - !Ref VpcCidr
-            - 0.0.0.0/0
+          CidrIp: 0.0.0.0/0
       SecurityGroupEgress:
         - IpProtocol: -1
           FromPort: -1
@@ -81,13 +70,20 @@ Resources:
               - 'bedrock:InvokeModelWithResponseStream'
             Resource: '*'
 
+  # This is an AWS CloudFormation resource that creates a Network Load Balancer (NLB):
+# - Creates an internet-facing NLB that can accept traffic from the internet
+# - Deploys across multiple subnets specified in SubnetIds parameter
+# - Uses IPv4 addressing
+# - Associates with the NLBSecurityGroup for network access control
+# - Disables deletion protection to allow stack deletion
+# - Enables cross-zone load balancing to distribute traffic across all AZs
   NetworkLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     DependsOn: BedrockRuntimeEndpoint
     Properties:
       Name: !Sub ${AWS::StackName}-nlb
       Type: network
-      Scheme: !Ref NLBScheme
+      Scheme: internet-facing
       IpAddressType: ipv4
       Subnets: !Ref SubnetIds
       SecurityGroups: 
@@ -219,11 +215,6 @@ Resources:
       ServiceToken: !GetAtt RegisterTargetsFunction.Arn
       TargetGroupArn: !Ref NLBTargetGroup
       IpAddresses: !GetAtt GetEndpointIPs.IpAddresses
-
-Conditions:
-  IsInternal: !Equals 
-    - !Ref NLBScheme
-    - internal
 
 Outputs:
   BedrockRuntimeEndpointId:
